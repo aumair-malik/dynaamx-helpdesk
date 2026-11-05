@@ -197,13 +197,6 @@
                 </div>
               </div>
             </template>
-
-            <div
-              v-if="config.show_powered_by !== false"
-              class="flex items-center justify-center pb-1.5 shrink-0"
-            >
-              <PoweredBy />
-            </div>
           </template>
 
           <template v-else>
@@ -502,7 +495,6 @@ const BACK_BUTTON_CLASS =
 const PREVIEW_NAV_TAB_CLASS = 'flex w-full flex-col items-center justify-center gap-1 py-4'
 
 import { computed, ref, watch } from 'vue'
-import PoweredBy from '@shared-ui/components/PoweredBy.vue'
 import { useElementSize } from '@vueuse/core'
 import { useI18n } from 'vue-i18n'
 import { Button } from '@shared-ui/components/ui/button'

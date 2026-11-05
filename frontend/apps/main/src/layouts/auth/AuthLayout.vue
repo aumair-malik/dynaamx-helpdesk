@@ -6,15 +6,11 @@
           <slot />
         </div>
       </main>
-      <footer class="flex justify-center px-4 pb-6">
-        <PoweredBy />
-      </footer>
     </div>
   </div>
 </template>
 
 <script setup>
-import PoweredBy from '@shared-ui/components/PoweredBy.vue'
 </script>
 
 <style scoped>

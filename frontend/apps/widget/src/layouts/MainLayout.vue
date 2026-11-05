@@ -52,19 +52,12 @@
           <span class="text-xs font-medium">{{ $t('globals.terms.help') }}</span>
         </TabsTrigger>
       </TabsList>
-      <div
-        v-if="widgetStore.config?.show_powered_by !== false && widgetStore.isChatView"
-        class="flex items-center justify-center pb-1.5"
-      >
-        <PoweredBy />
-      </div>
       <ConnectionBanner />
     </Tabs>
   </div>
 </template>
 
 <script setup>
-import PoweredBy from '@shared-ui/components/PoweredBy.vue'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@shared-ui/components/ui/tabs'
 import HomeView from '@widget/views/HomeView.vue'
 import { House, MessagesSquare, CircleQuestionMark } from 'lucide-vue-next'

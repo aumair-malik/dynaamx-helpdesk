@@ -282,17 +282,6 @@
                     <FormMessage />
                   </FormItem>
                 </FormField>
-
-                <FormField v-slot="{ componentField, handleChange }" name="config.show_powered_by">
-                  <FormItem>
-                    <SwitchField
-                      :title="$t('admin.inbox.livechat.showPoweredBy')"
-                      :description="$t('admin.inbox.livechat.showPoweredBy.description')"
-                      :checked="componentField.modelValue"
-                      @update:checked="handleChange"
-                    />
-                  </FormItem>
-                </FormField>
               </AccordionContent>
             </AccordionItem>
             <AccordionItem value="branding" data-section="branding">
