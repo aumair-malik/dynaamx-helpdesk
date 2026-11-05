@@ -1,0 +1,194 @@
+# Builds Libredesk with Dynaamx's changes (dynaamx/apply.py) and publishes
+#   ghcr.io/<owner>/<this repository>:<version>-dynaamx.<revision>
+# with its exact source as the tag of the same name in this repository (AGPL-3.0).
+# <revision> is dynaamx/REVISION: raise it after changing the build, so every image tag
+# stays one fixed build. Daily, it builds the latest release once; nothing deploys from here.
+name: Dynaamx image
+
+on:
+  schedule:
+    - cron: "23 1 * * *" # 06:23 in Pakistan
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Libredesk release to build, e.g. v2.9.2 (empty: the latest release)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write # the source tag
+  packages: write # the image
+
+concurrency:
+  group: dynaamx-image
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: abhinavxd/libredesk
+  # Base image and the tzdata the time zone list is built from. Keep pinned by digest.
+  ALPINE: alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+  CYPRESS_INSTALL_BINARY: "0" # the end-to-end test runner isn't needed to build
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out the build files
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: fork
+          persist-credentials: false
+
+      - name: Pick the version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${INPUT_VERSION:-$(gh api "repos/$UPSTREAM/releases/latest" --jq .tag_name)}"
+          if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Not a Libredesk release tag: $version"; exit 1
+          fi
+          revision="$(tr -d '[:space:]' < fork/dynaamx/REVISION)"
+          if [[ ! "$revision" =~ ^[0-9]+$ ]]; then
+            echo "::error::dynaamx/REVISION must be a number"; exit 1
+          fi
+          {
+            echo "version=$version"
+            echo "tag=${version}-dynaamx.${revision}"
+            echo "image=ghcr.io/${GITHUB_REPOSITORY,,}:${version}-dynaamx.${revision}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub's container registry
+        env:
+          TOKEN: ${{ github.token }}
+        run: echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Skip a version already built
+        id: existing
+        env:
+          IMAGE: ${{ steps.version.outputs.image }}
+        run: |
+          if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+            echo "$IMAGE already exists: nothing to do." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch Libredesk ${{ steps.version.outputs.version }}
+        if: steps.existing.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: git clone --quiet --branch "$VERSION" --single-branch "https://github.com/$UPSTREAM.git" src
+
+      - name: Apply Dynaamx's changes
+        if: steps.existing.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir tz
+          docker run --rm "$ALPINE" sh -c \
+            'apk add --no-cache -q tzdata && tar -C /usr/share/zoneinfo -cf - zone.tab zone1970.tab tzdata.zi' \
+            | tar -xf - -C tz
+          python3 -I fork/dynaamx/apply.py src --tzdata tz --zones-out zones.txt
+          # The source tag carries the build files too, and not upstream's workflows (its
+          # release workflow runs on v* tags).
+          cp -r fork/dynaamx src/dynaamx
+          cp fork/.github/workflows/dynaamx-image.yml src/dynaamx/
+          git -C src rm -rq --ignore-unmatch .github/workflows
+          git -C src add -A
+          git -C src -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -qm "Dynaamx build of Libredesk $VERSION (dynaamx/REVISION $(cat fork/dynaamx/REVISION))"
+
+      - name: Set up Go
+        if: steps.existing.outputs.skip != 'true'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: src/go.mod
+          cache-dependency-path: src/go.sum
+
+      - name: Set up pnpm
+        if: steps.existing.outputs.skip != 'true'
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: src/frontend/package.json
+
+      - name: Set up Node.js
+        if: steps.existing.outputs.skip != 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Build
+        if: steps.existing.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          make -C src build LIBREDESK_VERSION="$VERSION"
+          if grep -rl "helpCenter.poweredBy" src/frontend/dist; then
+            echo "::error::The built frontend still contains the credit"; exit 1
+          fi
+
+      - name: Build the image
+        if: steps.existing.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          IMAGE: ${{ steps.version.outputs.image }}
+        run: |
+          docker build --platform linux/amd64 -f fork/dynaamx/Dockerfile \
+            --build-arg ALPINE="$ALPINE" \
+            --label org.opencontainers.image.title=libredesk \
+            --label org.opencontainers.image.description="Libredesk $VERSION with Dynaamx's changes" \
+            --label org.opencontainers.image.source="https://github.com/$GITHUB_REPOSITORY" \
+            --label org.opencontainers.image.version="$TAG" \
+            --label org.opencontainers.image.revision="$(git -C src rev-parse HEAD)" \
+            --label org.opencontainers.image.licenses=AGPL-3.0 \
+            -t "$IMAGE" src
+
+      - name: Test the image
+        if: steps.existing.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          IMAGE: ${{ steps.version.outputs.image }}
+        run: |
+          docker run --rm "$IMAGE" ./libredesk --version | tee version.txt
+          grep -q "^$VERSION " version.txt
+          # Every zone in the dropdown must load on the server (time.LoadLocation reads these).
+          docker run --rm -i "$IMAGE" sh -c 'm=0; while read -r z; do
+            [ "$z" = UTC ] || [ -f "/usr/share/zoneinfo/$z" ] || { echo "missing: $z"; m=1; }
+          done; exit $m' < zones.txt
+          docker run --rm "$IMAGE" sh -c 'command -v wget' # the compose health check uses it
+
+      - name: Publish the source
+        if: steps.existing.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          TOKEN: ${{ github.token }}
+        run: |
+          # Forced only so a run whose image push failed can be repeated: the image check
+          # above already stops before this for any tag that was published.
+          auth="$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          git -C src -c http.extraheader="AUTHORIZATION: basic $auth" \
+            push --force --quiet "https://github.com/$GITHUB_REPOSITORY.git" "HEAD:refs/tags/$TAG"
+
+      - name: Publish the image
+        if: steps.existing.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          IMAGE: ${{ steps.version.outputs.image }}
+        run: |
+          docker push --quiet "$IMAGE"
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE")"
+          {
+            echo "### Built $IMAGE"
+            echo
+            echo "- Digest: \`$digest\`"
+            echo "- Source: https://github.com/$GITHUB_REPOSITORY/tree/$TAG"
+            echo "- Time zones in the dropdown: $(wc -l < zones.txt)"
+            echo
+            echo "Deploy it by changing the Libredesk image in Coolify to \`$IMAGE\`."
+          } >> "$GITHUB_STEP_SUMMARY"
