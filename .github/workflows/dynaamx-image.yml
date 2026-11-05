@@ -23,6 +23,10 @@ concurrency:
   group: dynaamx-image
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: bash # -e and -o pipefail: a failing command in a pipe fails the step
+
 env:
   UPSTREAM: abhinavxd/libredesk
   # Base image and the tzdata the time zone list is built from. Keep pinned by digest.
@@ -87,9 +91,11 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           mkdir tz
-          docker run --rm "$ALPINE" sh -c \
-            'apk add --no-cache -q tzdata && tar -C /usr/share/zoneinfo -cf - zone.tab zone1970.tab tzdata.zi' \
-            | tar -xf - -C tz
+          # The zoneinfo tree the image will install (Alpine ships no tzdata.zi: its version
+          # comes from the package).
+          docker run --rm "$ALPINE" sh -c 'apk add --no-cache -q tzdata &&
+            apk list --installed tzdata > /usr/share/zoneinfo/tzdata-version &&
+            tar -C /usr/share/zoneinfo -cf - .' | tar -xf - -C tz
           python3 -I fork/dynaamx/apply.py src --tzdata tz --zones-out zones.txt
           # The source tag carries the build files too, and not upstream's workflows (its
           # release workflow runs on v* tags).

@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Apply Dynaamx's changes to a Libredesk source checkout.
 
-    python3 dynaamx/apply.py <libredesk-src> --tzdata <dir> [--zones-out <file>]
+    python3 dynaamx/apply.py <libredesk-src> --tzdata <zoneinfo dir> [--zones-out <file>]
 
 1. Removes every "Powered by" credit: the agent sign-in page, the chat widget (and its preview
    in the inbox settings, with the now pointless "Show powered by" switch), the help center
    footers (both themes), the survey page and the footer of every email.
 2. Replaces the short time zone list (35 zones in v2.9.2) with every zone the server accepts:
-   zone.tab and zone1970.tab from <dir>, the tzdata the image installs, so the list matches
-   what the server's time.LoadLocation can load. Labels carry the browser's current offset.
+   zone.tab and zone1970.tab in the zoneinfo tree of the tzdata the image installs, so the
+   list matches what the server's time.LoadLocation can load. Labels carry the browser's
+   current offset.
 
 Every edit must match exactly as often as expected, and a final check looks for any credit
 left, so a Libredesk release that moves things fails the build instead of shipping a credit.
@@ -135,6 +136,18 @@ def tab_zones(path: pathlib.Path) -> set[str]:
     return zones
 
 
+def tzdata_version(tzdata: pathlib.Path) -> str:
+    """tzdata.zi's version line (Debian, Ubuntu) or the `tzdata-version` file the workflow
+    writes from Alpine's package (Alpine ships no tzdata.zi)."""
+    zi = tzdata / "tzdata.zi"
+    if zi.is_file():
+        found = re.search(r"^# version (\S+)", zi.read_text(), re.M)
+        if found:
+            return found.group(1)
+    stamp = tzdata / "tzdata-version"
+    return stamp.read_text().split()[0].removeprefix("tzdata-") if stamp.is_file() else "(unknown version)"
+
+
 def timezones(src: pathlib.Path, tzdata: pathlib.Path, zones_out: pathlib.Path | None) -> None:
     path = src / TIMEZONES
     old = path.read_text() if path.is_file() else fail(f"{TIMEZONES} not found")
@@ -144,25 +157,27 @@ def timezones(src: pathlib.Path, tzdata: pathlib.Path, zones_out: pathlib.Path |
     if len(old_values) < 10:
         fail(f"{TIMEZONES}: could not read upstream's values")
 
-    zi = (tzdata / "tzdata.zi").read_text()
-    version = re.search(r"^# version (\S+)", zi, re.M)
-    links = dict(  # link name -> zone it points to
-        (parts[2], parts[1]) for parts in (line.split() for line in zi.splitlines())
-        if len(parts) == 3 and parts[0] == "L"
-    )
     zones = tab_zones(tzdata / "zone.tab") | tab_zones(tzdata / "zone1970.tab") | {"UTC"}
+    missing = sorted(z for z in zones if z != "UTC" and not (tzdata / z).is_file())
+    if missing:
+        fail(f"listed in zone.tab but not in {tzdata}: {', '.join(missing[:5])}")
     for value in sorted(old_values - zones):
-        # Upstream lists a few old names (America/Buenos_Aires). Keep the name a setting may
-        # already hold and drop the zone it points to, so the list has no duplicate place.
-        target = links.get(value)
-        if target is None:
-            fail(f"upstream's {value} is neither a zone nor a link in tzdata")
-        zones.discard(target)
+        # Upstream lists a few old names (America/Buenos_Aires), links to a zone under its
+        # current name. Keep the name a setting may already hold and drop the zone it points
+        # to, so the list has no duplicate place. A link's file is the zone's file.
+        if not (tzdata / value).is_file():
+            print(f"time zones: left out upstream's {value}, not in this tzdata (the server "
+                  "would reject it)")
+            continue
+        data = (tzdata / value).read_bytes()
+        same = [z for z in zones if z != "UTC" and (tzdata / z).read_bytes() == data]
+        if len(same) == 1:
+            zones.discard(same[0])
         zones.add(value)
 
     ordered = sorted(zones)
     path.write_text(TIMEZONES_JS.format(
-        version=version.group(1) if version else "(unknown)",
+        version=tzdata_version(tzdata),
         zones=json.dumps(ordered, indent=2).replace('"', "'"),
     ))
     print(f"time zones: {len(ordered)} (upstream had {len(old_values)})")
